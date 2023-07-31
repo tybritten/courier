@@ -10,6 +10,7 @@ require (
 	github.com/evalphobia/logrus_sentry v0.8.2
 	github.com/go-chi/chi v4.1.2+incompatible
 	github.com/gofrs/uuid v4.3.1+incompatible
+	github.com/golang-jwt/jwt/v5 v5.0.0
 	github.com/gomodule/redigo v1.8.9
 	github.com/gorilla/schema v1.2.0
 	github.com/jmoiron/sqlx v1.3.5
