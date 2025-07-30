@@ -138,7 +138,7 @@ func (h *handler) Send(ctx context.Context, msg courier.MsgOut, res *courier.Sen
 			ID:           msg.ID(),
 			Text:         msg.Text(),
 			Attachments:  msg.Attachments(),
-			QuickReplies: handlers.TextOnlyQuickReplies(msg.QuickReplies()),
+			QuickReplies: msg.QuickReplies(),
 			Origin:       msg.Origin(),
 			UserID:       msg.UserID(),
 		},
