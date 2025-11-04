@@ -277,13 +277,8 @@ func (h *handler) Send(ctx context.Context, msg courier.MsgOut, res *courier.Sen
 						},
 					},
 					Content: v2MMSOutboundContent{
-						Title: "",
-						MessageSegments: []v2MMSMessageSegment{
-							{
-								Type: "TEXT",
-								Text: msg.Text(),
-							},
-						},
+						Title:           "",
+						MessageSegments: []v2MMSMessageSegment{},
 					},
 					Webhooks: &v3OutboundWebhooks{
 						Delivery: v3OutboundDelivery{
@@ -294,6 +289,14 @@ func (h *handler) Send(ctx context.Context, msg courier.MsgOut, res *courier.Sen
 					},
 				},
 			},
+		}
+
+		// Add text segment only if there is text content
+		if msg.Text() != "" {
+			mmsPayload.Messages[0].Content.MessageSegments = append(mmsPayload.Messages[0].Content.MessageSegments, v2MMSMessageSegment{
+				Type: "TEXT",
+				Text: msg.Text(),
+			})
 		}
 
 		for _, attachmentStr := range msg.Attachments() {
