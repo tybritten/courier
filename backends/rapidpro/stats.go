@@ -96,8 +96,12 @@ func (c *StatsCollector) RecordIncoming(typ courier.ChannelType, evts []courier.
 	c.stats.IncomingRequests[typ]++
 
 	for _, e := range evts {
-		switch e.(type) {
+		switch ev := e.(type) {
 		case courier.MsgIn:
+			if m, ok := ev.(*Msg); ok && m.alreadyWritten {
+				c.stats.IncomingIgnored[typ]++
+				continue
+			}
 			c.stats.IncomingMessages[typ]++
 		case courier.StatusUpdate:
 			c.stats.IncomingStatuses[typ]++
