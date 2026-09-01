@@ -300,7 +300,7 @@ func (s *server) channelHandleWrapper(handler ChannelHandler, handlerFunc Channe
 				slog.Error("error writing channel log", "error", err)
 			}
 
-			s.backend.OnReceiveComplete(ctx, channel, events, clog)
+			s.backend.OnReceiveComplete(ctx, channel, events, clog, r)
 		} else {
 			slog.Info("non-channel specific request", "error", err, "channel_type", handler.ChannelType(), "request", recorder.Trace.RequestTrace, "status", recorder.Trace.Response.StatusCode)
 		}

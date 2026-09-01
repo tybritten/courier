@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -87,7 +88,16 @@ type backend struct {
 	// tracking of external ids of messages we've sent in case we need one before its status update has been written
 	sentExternalIDs *redisx.IntervalHash
 
+	// cache of the outgoing msg JSON keyed by <channel_id>|<external_id>, populated only for channels that opt in
+	// via a fallback_channel_uuid config value. Used by RerouteMsg to reconstruct a msg for re-enqueue on a sibling
+	// channel when a DLR indicates the destination number can't be reached via the original channel (temporary
+	// migration mechanism while a shortcode is being moved between carriers).
+	sentPayloads *redisx.IntervalHash
+
 	stats *StatsCollector
+
+	// serializes appends to dupe capture files so concurrent handlers don't interleave lines
+	dupeMu sync.Mutex
 
 	// both sqlx and redis provide wait stats which are cummulative that we need to convert into increments by
 	// tracking their previous values
@@ -129,6 +139,7 @@ func newBackend(cfg *courier.Config) courier.Backend {
 		receivedExternalIDs: redisx.NewIntervalHash("seen-external-ids", time.Hour*24, 2), // 24 - 48 hours
 		sentIDs:             redisx.NewIntervalSet("sent-ids", time.Hour, 2),              // 1 - 2 hours
 		sentExternalIDs:     redisx.NewIntervalHash("sent-external-ids", time.Hour, 2),    // 1 - 2 hours
+		sentPayloads:        redisx.NewIntervalHash("sent-payloads", time.Hour*2, 2),      // 2 - 4 hours; only populated for channels with fallback_channel_uuid
 
 		stats: NewStatsCollector(),
 	}
@@ -215,6 +226,9 @@ func (b *backend) Start() error {
 	}
 	if err == nil {
 		err = courier.EnsureSpoolDirPresent(b.config.SpoolDir, "events")
+	}
+	if err == nil {
+		err = courier.EnsureSpoolDirPresent(b.config.SpoolDir, "dupes")
 	}
 	if err != nil {
 		log.Error("spool directories not writable", "error", err)
@@ -521,12 +535,210 @@ func (b *backend) OnSendComplete(ctx context.Context, msg courier.MsgOut, status
 		}
 	}
 
+	// cache the outbound msg for possible reroute if the channel has a fallback configured. This is temporary
+	// scaffolding for the Bird->Infobip shortcode migration: at DLR time we may need to re-send this same msg on
+	// the sibling channel, and the DB row alone doesn't carry the mailroom-side flow/session context we'd need
+	// to reconstruct it faithfully.
+	if wasSuccess && status.ExternalID() != "" {
+		if fallback := dbMsg.channel.StringConfigForKey(configFallbackChannelUUID, ""); fallback != "" {
+			b.cacheSentPayload(rc, dbMsg, status.ExternalID())
+		}
+	}
+
 	b.stats.RecordOutgoing(msg.Channel().ChannelType(), wasSuccess, clog.Elapsed)
 }
 
+// configFallbackChannelUUID is the channel-config key that opts a channel into the reroute path. When set on a
+// channel, courier will cache each outbound msg's JSON payload at send-completion so that a subsequent DLR handler
+// can call RerouteMsg to re-send the msg on the named sibling channel.
+const configFallbackChannelUUID = "fallback_channel_uuid"
+
+func (b *backend) cacheSentPayload(rc redis.Conn, m *Msg, externalID string) {
+	data, err := json.Marshal(m)
+	if err != nil {
+		slog.Error("unable to marshal msg for reroute cache", "error", err, "msg_id", m.ID())
+		return
+	}
+	key := fmt.Sprintf("%d|%s", m.ChannelID_, externalID)
+	if err := b.sentPayloads.Set(rc, key, string(data)); err != nil {
+		slog.Error("unable to cache msg payload for reroute", "error", err, "msg_id", m.ID())
+	}
+}
+
 // OnReceiveComplete is called when the server has finished handling an incoming request
-func (b *backend) OnReceiveComplete(ctx context.Context, ch courier.Channel, events []courier.Event, clog *courier.ChannelLog) {
+func (b *backend) OnReceiveComplete(ctx context.Context, ch courier.Channel, events []courier.Event, clog *courier.ChannelLog, r *http.Request) {
 	b.stats.RecordIncoming(ch.ChannelType(), events, clog.Elapsed)
+
+	// capture full HTTP request for duplicates so we can investigate provider redelivery
+	for _, e := range events {
+		if m, ok := e.(*Msg); ok && m.alreadyWritten {
+			b.captureDuplicate(m, clog, r)
+		}
+	}
+}
+
+// RerouteMsg re-sends a previously-sent outbound msg on a different channel. It is used by the DLR path of
+// channels being migrated to a new provider: when the source channel's DLR indicates the destination can't be
+// reached (e.g. Bird reports the shortcode isn't provisioned on the recipient's carrier), the handler calls this
+// to swap the URN's preferred channel to `fallback`, rewrite the msgs_msg row to point at `fallback`, and push
+// the msg back onto the outbound queue for the sibling channel.
+//
+// The msg payload is looked up from the sent-payloads Redis cache populated by OnSendComplete — the DB row
+// alone doesn't carry the mailroom-side flow/session context that we need to preserve across the reroute.
+// If the cache entry is missing (TTL expired, restart between send and DLR), reroute fails and the caller
+// should fall through to writing a normal failed status.
+func (b *backend) RerouteMsg(ctx context.Context, source courier.Channel, fallback courier.Channel, externalID string) error {
+	if externalID == "" {
+		return errors.New("cannot reroute msg without external id")
+	}
+	srcCh := source.(*Channel)
+	dstCh := fallback.(*Channel)
+
+	rc := b.rp.Get()
+	defer rc.Close()
+
+	key := fmt.Sprintf("%d|%s", srcCh.ID(), externalID)
+	cached, err := b.sentPayloads.Get(rc, key)
+	if err != nil {
+		return fmt.Errorf("error reading cached msg payload: %w", err)
+	}
+	if cached == "" {
+		return fmt.Errorf("no cached msg payload for reroute (channel_id=%d external_id=%s)", srcCh.ID(), externalID)
+	}
+
+	m := &Msg{}
+	if err := json.Unmarshal([]byte(cached), m); err != nil {
+		return fmt.Errorf("error unmarshaling cached msg payload: %w", err)
+	}
+	if m.ID_ == courier.NilMsgID {
+		return fmt.Errorf("cached msg payload has no id (channel_id=%d external_id=%s)", srcCh.ID(), externalID)
+	}
+	if m.ContactURNID_ == NilContactURNID {
+		return fmt.Errorf("cached msg payload has no contact_urn_id (msg_id=%d)", m.ID_)
+	}
+
+	// rewrite in place: update the URN's preferred channel and reset the msg row to queued on the fallback channel.
+	// We update by contact_urn.id and msgs_msg.id so this stays a targeted, indexed write with no chance of
+	// clobbering anything else. The tx is small on purpose - no external calls between BEGIN and COMMIT.
+	tx, err := b.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error starting reroute tx: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, sqlRerouteContactURN, dstCh.ID(), m.ContactURNID_); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("error updating contact_urn channel: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, sqlRerouteMsg, dstCh.ID(), m.ID_, srcCh.ID()); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("error updating msgs_msg for reroute: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error committing reroute tx: %w", err)
+	}
+
+	// re-serialize the cached payload with the new channel identifiers and push onto the fallback channel's outbox.
+	// We use tps=0 (unthrottled) here on purpose - the reroute rate is naturally paced by DLR arrivals so we don't
+	// need mailroom's throttling machinery for the migration window.
+	m.ChannelID_ = dstCh.ID()
+	m.ChannelUUID_ = dstCh.UUID()
+	m.ExternalID_ = ""
+	m.SentOn_ = nil
+	m.Status_ = courier.MsgStatusPending
+	requeued, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("error marshaling msg for reroute enqueue: %w", err)
+	}
+	if err := queue.PushOntoQueue(rc, msgQueueName, string(dstCh.UUID()), 0, "["+string(requeued)+"]", queue.HighPriority); err != nil {
+		return fmt.Errorf("error pushing rerouted msg onto queue: %w", err)
+	}
+
+	// clear the cache entry - if the fallback channel also fails to deliver, mailroom's normal retry loop takes
+	// over and we don't want a second DLR on the (now-orphaned) old external_id to trigger another reroute.
+	if err := b.sentPayloads.Del(rc, key); err != nil {
+		slog.Warn("error clearing rerouted msg from cache", "error", err, "msg_id", m.ID_)
+	}
+	return nil
+}
+
+// sqlRerouteContactURN sets contacts_contacturn.channel_id to the fallback channel for the given URN id. This
+// is the same "preferred channel for this URN" pointer that setDefaultURN updates on inbound msgs.
+const sqlRerouteContactURN = `UPDATE contacts_contacturn SET channel_id = $1 WHERE id = $2`
+
+// sqlRerouteMsg resets a msgs_msg row so it will be re-picked up on the fallback channel. We clear external_id
+// and sent_on (the fallback provider will assign new values on its send), set status back to 'Q'ueued, bump
+// next_attempt to now, and refuse to touch anything unless the row still points at the source channel - that
+// guard makes a duplicate DLR arriving after we've already rerouted a no-op instead of a channel swap loop.
+const sqlRerouteMsg = `
+UPDATE msgs_msg
+   SET channel_id  = $1,
+       status      = 'Q',
+       external_id = NULL,
+       sent_on     = NULL,
+       next_attempt = NOW(),
+       modified_on  = NOW()
+ WHERE id = $2 AND channel_id = $3 AND direction = 'O'`
+
+// captureDuplicate appends a record of a duplicate inbound webhook delivery to
+// <spool>/dupes/<external_id>.jsonl as one JSON object per line. The fields are
+// chosen to be useful to the upstream provider when investigating their own
+// redelivery: the TCP source address (which of their hosts hit us), the full
+// request bytes (so they can match on their own request id / signature / body),
+// and the timestamp we received it. Internal-only identifiers (our channel
+// uuid, msg uuid, urn, log uuid, our hostname) are intentionally omitted.
+func (b *backend) captureDuplicate(msg *Msg, clog *courier.ChannelLog, r *http.Request) {
+	extID := msg.ExternalID()
+	if extID == "" {
+		// external_id is the provider's id - if we somehow don't have one, skip
+		// rather than leak our internal msg uuid into the filename
+		return
+	}
+
+	safe := strings.Map(func(c rune) rune {
+		if c == '/' || c == '\\' || c == ':' || c == 0 {
+			return '_'
+		}
+		return c
+	}, extID)
+
+	capture := map[string]any{
+		"external_id":     extID,
+		"received_at":     time.Now().UTC().Format(time.RFC3339Nano),
+		"remote_addr":     r.RemoteAddr,
+		"x_forwarded_for": r.Header.Get("X-Forwarded-For"),
+		"x_real_ip":       r.Header.Get("X-Real-IP"),
+	}
+	if r.TLS != nil {
+		capture["tls_server_name"] = r.TLS.ServerName
+	}
+	if len(clog.HttpLogs) > 0 {
+		hl := clog.HttpLogs[0]
+		// only include the bytes the provider actually sent us - not our response,
+		// not our internal timing/retry metadata
+		capture["url"] = hl.URL
+		capture["request"] = hl.Request
+	}
+
+	data, err := json.Marshal(capture)
+	if err != nil {
+		slog.Error("error marshaling duplicate capture", "error", err, "msg", msg.UUID())
+		return
+	}
+
+	dest := filepath.Join(b.config.SpoolDir, "dupes", safe+".jsonl")
+
+	b.dupeMu.Lock()
+	defer b.dupeMu.Unlock()
+
+	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		slog.Error("error opening duplicate capture", "error", err, "path", dest, "msg", msg.UUID())
+		return
+	}
+	defer f.Close()
+
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		slog.Error("error writing duplicate capture", "error", err, "path", dest, "msg", msg.UUID())
+	}
 }
 
 // WriteMsg writes the passed in message to our store

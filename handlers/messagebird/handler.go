@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"strconv"
+	"strings"
 
 	"fmt"
 
@@ -32,6 +33,14 @@ var (
 	maxRequestBodyBytes int64 = 1024 * 1024
 	// error code messagebird returns when a contact has sent "stop"
 	errorStopped = 103
+	// error code Bird returns when the sender (shortcode) isn't registered on the receiving carrier - this is the
+	// "wrong carrier" signal we key off during the Bird -> Infobip shortcode migration. Some gateways don't
+	// populate the numeric code, so we also match a text pattern on statusReason as a fallback.
+	errorSenderUnregistered = 104
+	carrierRejectedReason   = "carrier rejected"
+	// configFallbackChannelUUID is the channel-config field naming the sibling channel to try when Bird says
+	// the destination number is on a carrier the shortcode is no longer on. Kept in sync with the backend key.
+	configFallbackChannelUUID = "fallback_channel_uuid"
 )
 
 type Message struct {
@@ -141,7 +150,53 @@ func (h *handler) receiveStatus(ctx context.Context, channel courier.Channel, w 
 		clog.Error(courier.ErrorExternal(fmt.Sprint(receivedStatus.StatusErrorCode), "Contact has sent 'stop'"))
 	}
 
+	// if the DLR is a "wrong carrier" failure and the channel has a fallback sibling configured, try to re-send
+	// the msg on the sibling instead of finalizing this failure. This is temporary migration scaffolding for
+	// the Bird -> Infobip shortcode move: succeeds silently on the DLR (200 OK, no status write), the DB row
+	// gets rewritten to point at the fallback channel, and the msg is pushed back onto the outbox queue.
+	if msgStatus == courier.MsgStatusFailed && isCarrierRejected(receivedStatus) {
+		if rerouted := h.tryReroute(ctx, channel, receivedStatus, clog); rerouted {
+			return nil, handlers.WriteAndLogRequestIgnored(ctx, h, channel, w, r, "carrier rejected, rerouted to fallback channel")
+		}
+	}
+
 	return handlers.WriteMsgStatusAndResponse(ctx, h, channel, status, w, r)
+}
+
+// isCarrierRejected returns true if the DLR indicates the destination number is on a carrier that this
+// shortcode isn't provisioned on. Bird populates statusErrorCode=104 (EC_SENDER_UNREGISTERED) when the downstream
+// carrier tells them; some gateways drop the numeric and only give the text reason, so we accept either.
+func isCarrierRejected(s *ReceivedStatus) bool {
+	if s.StatusErrorCode == errorSenderUnregistered {
+		return true
+	}
+	return strings.Contains(strings.ToLower(s.StatusReason), carrierRejectedReason)
+}
+
+// tryReroute attempts to swap the msg onto the channel's configured fallback sibling. Returns true if the
+// reroute was accepted by the backend and the DLR should be treated as handled (no failed-status write).
+// A false return means the caller should fall through to the normal failed-status path - either the channel
+// isn't configured for reroute or the backend couldn't reconstruct the msg (e.g. cached payload expired).
+func (h *handler) tryReroute(ctx context.Context, channel courier.Channel, s *ReceivedStatus, clog *courier.ChannelLog) bool {
+	fallbackUUID := channel.StringConfigForKey(configFallbackChannelUUID, "")
+	if fallbackUUID == "" {
+		return false
+	}
+	if s.ID == "" {
+		clog.Error(courier.ErrorResponseValueMissing("id"))
+		return false
+	}
+	fallback, err := h.Backend().GetChannel(ctx, courier.AnyChannelType, courier.ChannelUUID(fallbackUUID))
+	if err != nil {
+		clog.Error(courier.ErrorExternal("reroute_channel_load", fmt.Sprintf("Unable to load fallback channel %s: %s", fallbackUUID, err)))
+		return false
+	}
+	if err := h.Backend().RerouteMsg(ctx, channel, fallback, s.ID); err != nil {
+		clog.Error(courier.ErrorExternal("reroute_failed", err.Error()))
+		return false
+	}
+	clog.Error(courier.ErrorExternal(fmt.Sprint(s.StatusErrorCode), fmt.Sprintf("Rerouted to fallback channel %s (%s)", fallback.Name(), fallback.UUID())))
+	return true
 }
 
 func (h *handler) receiveMessage(ctx context.Context, channel courier.Channel, w http.ResponseWriter, r *http.Request, clog *courier.ChannelLog) ([]courier.Event, error) {

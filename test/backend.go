@@ -178,7 +178,12 @@ func (mb *MockBackend) OnSendComplete(ctx context.Context, msg courier.MsgOut, s
 	mb.sentMsgs[msg.ID()] = true
 }
 
-func (mb *MockBackend) OnReceiveComplete(ctx context.Context, ch courier.Channel, events []courier.Event, clog *courier.ChannelLog) {
+func (mb *MockBackend) OnReceiveComplete(ctx context.Context, ch courier.Channel, events []courier.Event, clog *courier.ChannelLog, r *http.Request) {
+}
+
+// RerouteMsg is a no-op in the mock backend
+func (mb *MockBackend) RerouteMsg(ctx context.Context, source courier.Channel, fallback courier.Channel, externalID string) error {
+	return nil
 }
 
 // WriteChannelLog writes the passed in channel log to the DB
