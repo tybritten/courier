@@ -589,7 +589,7 @@ func (b *backend) OnReceiveComplete(ctx context.Context, ch courier.Channel, eve
 // alone doesn't carry the mailroom-side flow/session context that we need to preserve across the reroute.
 // If the cache entry is missing (TTL expired, restart between send and DLR), reroute fails and the caller
 // should fall through to writing a normal failed status.
-func (b *backend) RerouteMsg(ctx context.Context, source courier.Channel, fallback courier.Channel, externalID string) error {
+func (b *backend) RerouteMsg(ctx context.Context, source courier.Channel, fallback courier.Channel, externalID string, clog *courier.ChannelLog) error {
 	if externalID == "" {
 		return errors.New("cannot reroute msg without external id")
 	}
@@ -630,7 +630,7 @@ func (b *backend) RerouteMsg(ctx context.Context, source courier.Channel, fallba
 		tx.Rollback()
 		return fmt.Errorf("error updating contact_urn channel: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, sqlRerouteMsg, dstCh.ID(), m.ID_, srcCh.ID()); err != nil {
+	if _, err := tx.ExecContext(ctx, sqlRerouteMsg, dstCh.ID(), m.ID_, srcCh.ID(), string(clog.UUID)); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("error updating msgs_msg for reroute: %w", err)
 	}
@@ -646,6 +646,10 @@ func (b *backend) RerouteMsg(ctx context.Context, source courier.Channel, fallba
 	m.ExternalID_ = ""
 	m.SentOn_ = nil
 	m.Status_ = courier.MsgStatusPending
+	// mark as a resend so sender.sendMessage clears the sent-ids dedup entry from the original Bird send before
+	// picking the msg up on the fallback channel; without this the sender sees the msg in sent-ids and short-
+	// circuits to Wired without ever calling the fallback's Send handler (i.e. the reroute silently no-ops).
+	m.IsResend_ = true
 	requeued, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("error marshaling msg for reroute enqueue: %w", err)
@@ -670,6 +674,9 @@ const sqlRerouteContactURN = `UPDATE contacts_contacturn SET channel_id = $1 WHE
 // and sent_on (the fallback provider will assign new values on its send), set status back to 'Q'ueued, bump
 // next_attempt to now, and refuse to touch anything unless the row still points at the source channel - that
 // guard makes a duplicate DLR arriving after we've already rerouted a no-op instead of a channel swap loop.
+// The DLR's own channel log UUID is appended to log_uuids so the admin's linked-logs view for this msg shows
+// the reroute event (WriteMsgStatusAndResponse would normally do this via sqlUpdateMsgByID, but the reroute
+// path bypasses that write to avoid clobbering the row we just reset).
 const sqlRerouteMsg = `
 UPDATE msgs_msg
    SET channel_id  = $1,
@@ -677,7 +684,8 @@ UPDATE msgs_msg
        external_id = NULL,
        sent_on     = NULL,
        next_attempt = NOW(),
-       modified_on  = NOW()
+       modified_on  = NOW(),
+       log_uuids    = array_append(log_uuids, $4::uuid)
  WHERE id = $2 AND channel_id = $3 AND direction = 'O'`
 
 // captureDuplicate appends a record of a duplicate inbound webhook delivery to

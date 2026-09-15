@@ -182,7 +182,7 @@ func (mb *MockBackend) OnReceiveComplete(ctx context.Context, ch courier.Channel
 }
 
 // RerouteMsg is a no-op in the mock backend
-func (mb *MockBackend) RerouteMsg(ctx context.Context, source courier.Channel, fallback courier.Channel, externalID string) error {
+func (mb *MockBackend) RerouteMsg(ctx context.Context, source courier.Channel, fallback courier.Channel, externalID string, clog *courier.ChannelLog) error {
 	return nil
 }
 

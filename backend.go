@@ -85,9 +85,11 @@ type Backend interface {
 	// RerouteMsg re-sends a previously-sent outbound msg on a sibling channel. Handlers call this from their
 	// DLR path when the DLR indicates the destination number can't be reached via the original channel (e.g.
 	// a shortcode being migrated between carriers). The backend rewrites the URN's preferred channel and the
-	// msg's channel_id to `fallback` and re-enqueues the msg for the sibling to send. Returns an error if the
-	// backend can't reconstruct the msg (e.g. no cached payload for the given channel + external id).
-	RerouteMsg(ctx context.Context, source Channel, fallback Channel, externalID string) error
+	// msg's channel_id to `fallback` and re-enqueues the msg for the sibling to send. `clog` is the DLR's
+	// channel log - its UUID is appended to msgs_msg.log_uuids so the admin can find the reroute event in
+	// the linked-logs list for that msg. Returns an error if the backend can't reconstruct the msg (e.g. no
+	// cached payload for the given channel + external id).
+	RerouteMsg(ctx context.Context, source Channel, fallback Channel, externalID string, clog *ChannelLog) error
 
 	// OnReceiveComplete is called when the server has finished handling an incoming request
 	OnReceiveComplete(context.Context, Channel, []Event, *ChannelLog, *http.Request)

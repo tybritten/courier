@@ -191,7 +191,7 @@ func (h *handler) tryReroute(ctx context.Context, channel courier.Channel, s *Re
 		clog.Error(courier.ErrorExternal("reroute_channel_load", fmt.Sprintf("Unable to load fallback channel %s: %s", fallbackUUID, err)))
 		return false
 	}
-	if err := h.Backend().RerouteMsg(ctx, channel, fallback, s.ID); err != nil {
+	if err := h.Backend().RerouteMsg(ctx, channel, fallback, s.ID, clog); err != nil {
 		clog.Error(courier.ErrorExternal("reroute_failed", err.Error()))
 		return false
 	}
