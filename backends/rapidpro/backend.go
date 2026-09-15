@@ -559,7 +559,9 @@ func (b *backend) cacheSentPayload(rc redis.Conn, m *Msg, externalID string) {
 		slog.Error("unable to marshal msg for reroute cache", "error", err, "msg_id", m.ID())
 		return
 	}
-	key := fmt.Sprintf("%d|%s", m.ChannelID_, externalID)
+	// key on the resolved channel's DB id, not m.ChannelID_ - Msg has no json tag on ChannelID_ so it's zero after
+	// unmarshaling from mailroom's queue payload; m.channel is populated by PopNextOutgoingMsg and has the real id.
+	key := fmt.Sprintf("%d|%s", m.channel.ID(), externalID)
 	if err := b.sentPayloads.Set(rc, key, string(data)); err != nil {
 		slog.Error("unable to cache msg payload for reroute", "error", err, "msg_id", m.ID())
 	}
