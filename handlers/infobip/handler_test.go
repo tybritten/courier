@@ -500,3 +500,63 @@ func TestOutgoing(t *testing.T) {
 
 	RunOutgoingTestCases(t, apiKeyChannel, newHandler(), apiKeySendTestCases, []string{"App test-api-key"}, nil)
 }
+
+var messagesAPITestCases = []IncomingTestCase{
+	{
+		Label:              "Receive MMS with subject",
+		URL:                receiveURL,
+		Data:               `{"results":[{"event":"MO","channel":"MMS","sender":"385916242493","destination":"2020","messageId":"mo-1","receivedAt":"2016-10-06T09:28:39.220+0000","content":[{"type":"SUBJECT","text":"Holiday"},{"type":"TEXT","text":"Look at this"}]}]}`,
+		ExpectedRespStatus: 200,
+		ExpectedMsgText:    Sp("Holiday\nLook at this"),
+		ExpectedURN:        "tel:+385916242493",
+		ExpectedExternalID: "mo-1",
+		ExpectedDate:       time.Date(2016, 10, 6, 9, 28, 39, 220000000, time.FixedZone("", 0)),
+	},
+	{
+		Label:              "Delivery report with error",
+		URL:                receiveURL,
+		Data:               `{"results":[{"event":"DELIVERY","channel":"SMS","messageId":"12345","status":{"groupId":5,"groupName":"UNDELIVERABLE","name":"UNDELIVERABLE_NOT_DELIVERED"},"error":{"id":27,"name":"EC_ABSENT_SUBSCRIBER","description":"Absent Subscriber","permanent":false}}]}`,
+		ExpectedRespStatus: 200,
+		ExpectedStatuses:   []ExpectedStatus{{ExternalID: "12345", Status: courier.MsgStatusFailed}},
+		ExpectedErrors:     []*clogs.LogError{courier.ErrorExternal("EC_ABSENT_SUBSCRIBER", "Absent Subscriber")},
+	},
+	{
+		Label:              "Delivery report without error",
+		URL:                receiveURL,
+		Data:               `{"results":[{"event":"DELIVERY","channel":"SMS","messageId":"12345","status":{"groupId":3,"groupName":"DELIVERED","name":"DELIVERED_TO_HANDSET"},"error":{"id":0,"name":"NO_ERROR","description":"No Error","permanent":false}}]}`,
+		ExpectedRespStatus: 200,
+		ExpectedStatuses:   []ExpectedStatus{{ExternalID: "12345", Status: courier.MsgStatusDelivered}},
+	},
+}
+
+func TestMessagesAPIIncoming(t *testing.T) {
+	RunIncomingTestCases(t, testChannels, newHandler(), messagesAPITestCases)
+}
+
+var messagesAPISendTestCases = []OutgoingTestCase{
+	{
+		Label:   "Rejected in response",
+		MsgText: "Simple Message",
+		MsgURN:  "tel:+250788383383",
+		MockResponses: map[string][]*httpx.MockResponse{
+			"https://api.infobip.com/messages-api/1/messages": {
+				httpx.NewMockResponse(200, nil, []byte(`{"messages":[{"messageId":"12345","status":{"groupId":5,"groupName":"REJECTED","id":52,"name":"REJECTED_DESTINATION","description":"Invalid destination address"}}]}`)),
+			},
+		},
+		ExpectedRequests: []ExpectedRequest{{
+			Headers: map[string]string{
+				"Content-Type":  "application/json",
+				"Accept":        "application/json",
+				"Authorization": "Basic VXNlcm5hbWU6UGFzc3dvcmQ=",
+			},
+		}},
+		ExpectedError:     courier.ErrResponseUnparseable,
+		ExpectedLogErrors: []*clogs.LogError{courier.ErrorExternal("REJECTED_DESTINATION", "Invalid destination address")},
+	},
+}
+
+func TestMessagesAPIOutgoing(t *testing.T) {
+	ch := test.NewMockChannel("8eb23e93-5ecb-45ba-b726-3b064e0c56ab", "IB", "2020", "US", []string{urns.Phone.Prefix},
+		map[string]any{courier.ConfigPassword: "Password", courier.ConfigUsername: "Username"})
+	RunOutgoingTestCases(t, ch, newHandler(), messagesAPISendTestCases, []string{httpx.BasicAuth("Username", "Password")}, nil)
+}

@@ -156,6 +156,22 @@ type ibDeliveryEvent struct {
 	Channel   string           `json:"channel"`
 	MessageID string           `json:"messageId"`
 	Status    ibDeliveryStatus `json:"status"`
+	Error     json.RawMessage  `json:"error"`
+}
+
+type ibDeliveryError struct {
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// logDeliveryError adds the error from a delivery report, if any, to the channel log
+func logDeliveryError(raw json.RawMessage, clog *courier.ChannelLog) {
+	e := &ibDeliveryError{}
+	if len(raw) == 0 || json.Unmarshal(raw, e) != nil || e.ID == 0 || e.Name == "" {
+		return
+	}
+	clog.Error(courier.ErrorExternal(e.Name, e.Description))
 }
 
 type ibDeliveryStatus struct {
@@ -214,6 +230,7 @@ func (h *handler) receiveEvents(ctx context.Context, channel courier.Channel, w 
 				slog.Info("infobip: unknown delivery status", "group_name", dr.Status.GroupName, "message_id", dr.MessageID, "channel_uuid", channel.UUID())
 				continue
 			}
+			logDeliveryError(dr.Error, clog)
 			status := h.Backend().NewStatusUpdateByExternalID(channel, dr.MessageID, msgStatus, clog)
 			if err := h.Backend().WriteStatusUpdate(ctx, status); err != nil {
 				return nil, err
@@ -247,10 +264,13 @@ func (h *handler) buildIncomingMsg(channel courier.Channel, mo *ibMOEvent, clog 
 		return nil, err
 	}
 
+	var subject string
 	var textParts []string
 	var attachments []string
 	for _, seg := range mo.Content {
 		switch seg.Type {
+		case "SUBJECT":
+			subject = seg.Text
 		case "TEXT":
 			if seg.Text != "" {
 				textParts = append(textParts, seg.Text)
@@ -264,6 +284,9 @@ func (h *handler) buildIncomingMsg(channel courier.Channel, mo *ibMOEvent, clog 
 				attachments = append(attachments, fmt.Sprintf("%s:%s", ct, seg.URL))
 			}
 		}
+	}
+	if subject != "" {
+		textParts = append([]string{subject}, textParts...)
 	}
 	text := strings.Join(textParts, "\n")
 	if text == "" && len(attachments) == 0 {
@@ -421,6 +444,11 @@ func (h *handler) Send(ctx context.Context, msg courier.MsgOut, res *courier.Sen
 
 	groupID, err := jsonparser.GetInt(respBody, "messages", "[0]", "status", "groupId")
 	if err != nil || (groupID != 1 && groupID != 3) {
+		name, _ := jsonparser.GetString(respBody, "messages", "[0]", "status", "name")
+		if name != "" {
+			description, _ := jsonparser.GetString(respBody, "messages", "[0]", "status", "description")
+			clog.Error(courier.ErrorExternal(name, description))
+		}
 		return courier.ErrResponseUnparseable
 	}
 
