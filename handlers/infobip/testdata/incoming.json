@@ -1062,5 +1062,200 @@
             "type": "receive",
             "errors": []
         }
+    },
+    {
+        "label": "Messages API undeliverable with error",
+        "url": "/c/ib/8eb23e93-5ecb-45ba-b726-3b064e0c56ab/receive",
+        "data": {
+            "results": [
+                {
+                    "event": "DELIVERY",
+                    "channel": "SMS",
+                    "sender": "2020",
+                    "destination": "385916242493",
+                    "messageId": "12345",
+                    "sentAt": "2024-05-06T09:28:39.220+0000",
+                    "doneAt": "2024-05-06T09:28:41.220+0000",
+                    "status": {
+                        "groupId": 2,
+                        "groupName": "UNDELIVERABLE",
+                        "id": 9,
+                        "name": "UNDELIVERABLE_NOT_DELIVERED",
+                        "description": "Message sent not delivered"
+                    },
+                    "error": {
+                        "groupId": 1,
+                        "groupName": "HANDSET_ERRORS",
+                        "id": 27,
+                        "name": "EC_ABSENT_SUBSCRIBER",
+                        "description": "Absent Subscriber",
+                        "permanent": false
+                    }
+                }
+            ]
+        },
+        "response": {
+            "status": 200,
+            "body": {
+                "message": "Status Update Accepted",
+                "data": [
+                    {
+                        "type": "status",
+                        "channel_uuid": "8eb23e93-5ecb-45ba-b726-3b064e0c56ab",
+                        "status": "F",
+                        "external_id": "12345"
+                    }
+                ]
+            }
+        },
+        "statuses": [
+            {
+                "channel_uuid": "8eb23e93-5ecb-45ba-b726-3b064e0c56ab",
+                "channel_id": 101,
+                "external_identifier": "12345",
+                "status": "F",
+                "log_uuid": "019a3a12-2cc8-7000-b29d-957e7ed37ac2"
+            }
+        ],
+        "log": {
+            "type": "msg_status",
+            "errors": [
+                {
+                    "code": "external",
+                    "ext_code": "EC_ABSENT_SUBSCRIBER",
+                    "message": "Absent Subscriber"
+                }
+            ]
+        }
+    },
+    {
+        "label": "Messages API MMS with subject",
+        "url": "/c/ib/8eb23e93-5ecb-45ba-b726-3b064e0c56ab/receive",
+        "data": {
+            "results": [
+                {
+                    "event": "MO",
+                    "channel": "MMS",
+                    "sender": "385916242493",
+                    "destination": "2020",
+                    "messageId": "ABC7",
+                    "receivedAt": "2024-05-06T09:28:39.220+0000",
+                    "content": [
+                        {
+                            "type": "SUBJECT",
+                            "text": "Holiday",
+                            "cleanText": "Holiday"
+                        },
+                        {
+                            "type": "TEXT",
+                            "text": "Look at this"
+                        },
+                        {
+                            "type": "IMAGE",
+                            "url": "https://example.com/image.jpg"
+                        }
+                    ]
+                }
+            ]
+        },
+        "response": {
+            "status": 200,
+            "body": {
+                "message": "Message Accepted",
+                "data": [
+                    {
+                        "type": "msg",
+                        "channel_uuid": "8eb23e93-5ecb-45ba-b726-3b064e0c56ab",
+                        "msg_uuid": "019a65d1-e1c8-7000-8401-3786dbc23de5",
+                        "text": "Holiday\nLook at this",
+                        "urn": "tel:+385916242493",
+                        "attachments": [
+                            "https://example.com/image.jpg"
+                        ],
+                        "external_id": "ABC7",
+                        "received_on": "2024-05-06T09:28:39.22Z"
+                    }
+                ]
+            }
+        },
+        "msgs": [
+            {
+                "uuid": "019a65d1-e1c8-7000-8401-3786dbc23de5",
+                "channel_uuid": "8eb23e93-5ecb-45ba-b726-3b064e0c56ab",
+                "urn": "tel:+385916242493",
+                "text": "Holiday\nLook at this",
+                "attachments": [
+                    "https://example.com/image.jpg"
+                ],
+                "external_id": "ABC7",
+                "created_on": "2025-11-08T23:34:04Z",
+                "received_on": "2024-05-06T09:28:39.22Z",
+                "log_uuids": [
+                    "019a65d1-d228-7000-bbf1-8cc0abefacc5"
+                ]
+            }
+        ],
+        "log": {
+            "type": "receive",
+            "errors": []
+        }
+    },
+    {
+        "label": "Status undeliverable with error",
+        "url": "/c/ib/8eb23e93-5ecb-45ba-b726-3b064e0c56ab/delivered",
+        "data": {
+            "results": [
+                {
+                    "messageId": "12345",
+                    "status": {
+                        "groupId": 2,
+                        "groupName": "UNDELIVERABLE",
+                        "id": 9,
+                        "name": "UNDELIVERABLE_NOT_DELIVERED"
+                    },
+                    "error": {
+                        "groupId": 1,
+                        "groupName": "HANDSET_ERRORS",
+                        "id": 27,
+                        "name": "EC_ABSENT_SUBSCRIBER",
+                        "description": "Absent Subscriber",
+                        "permanent": false
+                    }
+                }
+            ]
+        },
+        "response": {
+            "status": 200,
+            "body": {
+                "message": "Status Update Accepted",
+                "data": [
+                    {
+                        "type": "status",
+                        "channel_uuid": "8eb23e93-5ecb-45ba-b726-3b064e0c56ab",
+                        "status": "F",
+                        "external_id": "12345"
+                    }
+                ]
+            }
+        },
+        "statuses": [
+            {
+                "channel_uuid": "8eb23e93-5ecb-45ba-b726-3b064e0c56ab",
+                "channel_id": 101,
+                "external_identifier": "12345",
+                "status": "F",
+                "log_uuid": "019a56b0-3988-7000-9c1d-2345c73a1143"
+            }
+        ],
+        "log": {
+            "type": "msg_status",
+            "errors": [
+                {
+                    "code": "external",
+                    "ext_code": "EC_ABSENT_SUBSCRIBER",
+                    "message": "Absent Subscriber"
+                }
+            ]
+        }
     }
 ]

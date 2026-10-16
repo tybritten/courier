@@ -68,6 +68,22 @@ type ibStatus struct {
 	Status    struct {
 		GroupName string `validate:"required" json:"groupName"`
 	} `validate:"required" json:"status"`
+	Error json.RawMessage `json:"error"`
+}
+
+type ibError struct {
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// logDeliveryError adds the error from a delivery report, if any, to the channel log
+func logDeliveryError(raw json.RawMessage, clog *models.ChannelLog) {
+	e := &ibError{}
+	if len(raw) == 0 || json.Unmarshal(raw, e) != nil || e.ID == 0 || e.Name == "" {
+		return
+	}
+	clog.Error(models.ErrorExternal(e.Name, e.Description))
 }
 
 // receiveStatus is our receive function for delivery reports sent to the legacy delivered URL
@@ -82,6 +98,7 @@ func (h *handler) receiveStatus(ctx context.Context, channel *models.Channel, r 
 			return handlers.UnknownStatusError(statusMapping, s.Status.GroupName)
 		}
 
+		logDeliveryError(s.Error, clog)
 		in.Status(models.NewStatusUpdateByExternalID(channel, s.MessageID, msgStatus, clog))
 	}
 
@@ -115,6 +132,7 @@ type deliveryEvent struct {
 	Status    struct {
 		GroupName string `json:"groupName"`
 	} `json:"status"`
+	Error json.RawMessage `json:"error"`
 }
 
 // legacyInboundMessage is an inbound message in the SMS API (text) or MMS API (message segments) format
@@ -173,6 +191,7 @@ func (h *handler) receiveEvents(ctx context.Context, channel *models.Channel, r 
 				in.Ignored(fmt.Sprintf("ignoring unknown status '%s'", dr.Status.GroupName))
 				continue
 			}
+			logDeliveryError(dr.Error, clog)
 			in.Status(models.NewStatusUpdateByExternalID(channel, dr.MessageID, msgStatus, clog))
 
 		case "":
@@ -201,9 +220,12 @@ func receiveMO(channel *models.Channel, mo *moEvent, in *channels.Received, clog
 		return err
 	}
 
+	var subject string
 	var texts, attachments []string
 	for _, c := range mo.Content {
 		switch c.Type {
+		case "SUBJECT":
+			subject = c.Text
 		case "TEXT":
 			if c.Text != "" {
 				texts = append(texts, c.Text)
@@ -216,6 +238,10 @@ func receiveMO(channel *models.Channel, mo *moEvent, in *channels.Received, clog
 				texts = append(texts, c.Text)
 			}
 		}
+	}
+
+	if subject != "" {
+		texts = append([]string{subject}, texts...)
 	}
 
 	return addMsg(channel, urn, strings.Join(texts, "\n"), attachments, mo.MessageID, mo.ReceivedAt, in, clog)
@@ -425,6 +451,11 @@ func (h *handler) Send(ctx context.Context, msg *models.MsgOut, res *channels.Se
 
 	groupID, err := jsonparser.GetInt(respBody, "messages", "[0]", "status", "groupId")
 	if err != nil || (groupID != 1 && groupID != 3) {
+		name, _ := jsonparser.GetString(respBody, "messages", "[0]", "status", "name")
+		if name != "" {
+			description, _ := jsonparser.GetString(respBody, "messages", "[0]", "status", "description")
+			clog.Error(models.ErrorExternal(name, description))
+		}
 		return channels.ErrResponseContent
 	}
 

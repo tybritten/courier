@@ -503,5 +503,72 @@
             }
         },
         "log_errors": []
+    },
+    {
+        "label": "Rejected In Response",
+        "msg": {
+            "text": "Simple Message",
+            "urn": "tel:+250788383383"
+        },
+        "http_mocks": {
+            "https://api.infobip.com/messages-api/1/messages": [
+                {
+                    "status": 200,
+                    "body": "{\"messages\":[{\"messageId\":\"12345\",\"status\":{\"groupId\":5,\"groupName\":\"REJECTED\",\"id\":51,\"name\":\"MISSING_TO\",\"description\":\"Message rejected due to missing destination\"}}]}"
+                }
+            ]
+        },
+        "requests": [
+            {
+                "method": "POST",
+                "url": "https://api.infobip.com/messages-api/1/messages",
+                "headers": {
+                    "Accept": "application/json",
+                    "Authorization": "Basic VXNlcm5hbWU6UGFzc3dvcmQ=",
+                    "Content-Type": "application/json"
+                },
+                "body": {
+                    "messages": [
+                        {
+                            "channel": "SMS",
+                            "sender": "2020",
+                            "destinations": [
+                                {
+                                    "to": "250788383383",
+                                    "messageId": "0191e180-7d60-7000-aded-7d8b151cbd5b"
+                                }
+                            ],
+                            "content": {
+                                "body": {
+                                    "type": "TEXT",
+                                    "text": "Simple Message"
+                                }
+                            },
+                            "webhooks": {
+                                "delivery": {
+                                    "url": "https://localhost/c/ib/8eb23e93-5ecb-45ba-b726-3b064e0c56ab/receive",
+                                    "intermediateReport": true
+                                },
+                                "contentType": "application/json"
+                            }
+                        }
+                    ]
+                }
+            }
+        ],
+        "error": {
+            "message": "response content",
+            "log_error": {
+                "code": "response_content",
+                "message": "Response content indicates non-success."
+            }
+        },
+        "log_errors": [
+            {
+                "code": "external",
+                "ext_code": "MISSING_TO",
+                "message": "Message rejected due to missing destination"
+            }
+        ]
     }
 ]
